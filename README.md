@@ -55,6 +55,11 @@ dotnet run --project src/dotnet/services/DocumentService/Aize.DocumentService.Ap
 
 The API defaults to `http://localhost:5000` when launched through typical local tooling. The Python processor base URL is configured in `appsettings.json`.
 
+Swagger UI is available at:
+
+- `http://localhost:5000/swagger`
+- `https://localhost:7000/swagger`
+
 ### Start the Python processor
 
 ```bash
@@ -77,6 +82,31 @@ If needed, point the frontend at a different API URL:
 
 ```bash
 VITE_DOCUMENT_API_BASE_URL=http://localhost:5000 npm run dev
+```
+
+### Start backend services with Docker
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up --build
+```
+
+Docker now uses safer host ports by default to avoid common macOS conflicts:
+
+- .NET API: `http://localhost:5050`
+- Python processor: `http://localhost:8002`
+- Swagger UI: `http://localhost:5050/swagger`
+
+If you run the React app against the Dockerized backend:
+
+```bash
+cd src/web/pid-portal
+VITE_DOCUMENT_API_BASE_URL=http://localhost:5050 npm run dev
+```
+
+You can still override the Docker host ports if you want:
+
+```bash
+DOCUMENT_API_PORT=5051 PYTHON_PROCESSOR_PORT=8003 docker compose -f deploy/docker/docker-compose.yml up --build
 ```
 
 ## HTTP endpoints
