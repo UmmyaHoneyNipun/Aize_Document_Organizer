@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-processor
+  namespace: aize-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-processor
+  template:
+    metadata:
+      labels:
+        app: python-processor
+    spec:
+      containers:
+        - name: python-processor
+          image: ghcr.io/your-org/python-processor:latest
+          ports:
+            - containerPort: 8001
+          env:
+            - name: DOCUMENT_API_BASE_URL
+              value: http://document-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-processor
+  namespace: aize-pipeline
+spec:
+  selector:
+    app: python-processor
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001

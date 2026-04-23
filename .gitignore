@@ -5,6 +5,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
 *.user
 *.suo
 *.swp

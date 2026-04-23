@@ -1,0 +1,18 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: python-processor-queue-depth
+  namespace: aize-pipeline
+spec:
+  scaleTargetRef:
+    name: python-processor
+  minReplicaCount: 0
+  maxReplicaCount: 20
+  triggers:
+    - type: azure-servicebus
+      metadata:
+        namespace: "<service-bus-namespace>"
+        queueName: "document-uploaded"
+        messageCount: "50"
+      authenticationRef:
+        name: keda-service-bus-auth

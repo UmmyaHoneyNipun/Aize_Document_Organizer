@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  document-api:
+    build:
+      context: ../../
+      dockerfile: src/dotnet/services/DocumentService/Aize.DocumentService.Api/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      PythonProcessor__BaseUrl: http://python-processor:8001
+      LocalBlobStorage__RootPath: /shared/blob-storage
+    ports:
+      - "5000:8080"
+    volumes:
+      - shared-blob-storage:/shared/blob-storage
+
+  python-processor:
+    build:
+      context: ../../src/python/document_processor
+      dockerfile: Dockerfile
+    environment:
+      DOCUMENT_API_BASE_URL: http://document-api:8080
+    ports:
+      - "8001:8001"
+    volumes:
+      - shared-blob-storage:/shared/blob-storage
+
+volumes:
+  shared-blob-storage:
