@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Threading.Channels;
@@ -242,6 +243,14 @@ internal sealed class QueuedDocumentDispatchBackgroundService : BackgroundServic
             try
             {
                 await _pythonProcessorClient.DispatchAsync(message, stoppingToken);
+            }
+            catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.UnprocessableEntity)
+            {
+                await _applicationService.FailProcessingAsync(
+                    new FailDocumentProcessingRequest(
+                        message.DocumentId,
+                        "The uploaded document does not contain P&ID diagrams."),
+                    stoppingToken);
             }
             catch (Exception exception)
             {

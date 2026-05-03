@@ -4,10 +4,16 @@ import os
 import random
 import re
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
+import fitz
+import pytesseract
 from fastapi import FastAPI, HTTPException
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 
@@ -23,29 +29,39 @@ class DocumentUploadedMessage(BaseModel):
     correlation_id: str = Field(alias="correlationId")
 
 
+@dataclass(frozen=True)
+class PidClassificationResult:
+    is_pid: bool
+    score: float
+    threshold: float
+    labels: list[str]
+    instrument_count: int
+    equipment_count: int
+    line_number_count: int
+    keyword_hits: int
+    horizontal_line_peaks: int
+    vertical_line_peaks: int
+    dark_pixel_ratio: float
+    embedded_text_length: int
+    ocr_text_length: int
+    reason: str
+
+
 app = FastAPI(
     title="Aize Python Processor",
-    description="Simulated OCR/CV worker for uploaded P&ID drawings.",
-    version="0.1.0",
+    description="OCR/CV worker with P&ID document classification and gated analysis.",
+    version="0.2.0",
 )
 
-
-def _infer_labels(file_name: str, project_name: str) -> list[str]:
-    matches = re.findall(r"[A-Z]{1,6}(?:[- ]\d{2,4})", file_name.upper())
-    if matches:
-        return matches[:8]
-
-    project_token = re.sub(r"[^A-Z0-9]", "", project_name.upper())[:3] or "PID"
-    return [
-        f"{project_token}-101",
-        "FIT 003",
-        "PT 005",
-        "XV 008",
-        "P-207",
-        "T-411",
-        "HX-211",
-        "65-PUW2-S6-164-IH",
-    ]
+PID_INSTRUMENT_TAG_PATTERN = re.compile(
+    r"\b(?:AIT|FAL|FA|FCV|FE|FI|FIC|FIT|FQ|FR|FS|FT|FY|LA|LAL|LIC|LIR|LIT|LS|LT|PCV|PI|PIC|PIT|PRV|PSV|PT|SG|SCS|ST|TCV|TI|TIT|TT|V|XV|ZS)[- ]?\d{2,4}[A-Z]?\b"
+)
+PID_EQUIPMENT_TAG_PATTERN = re.compile(r"\b(?:T|TK|P|HX|V|E|C|FL)-\d{2,4}[A-Z]?\b")
+PID_LINE_NUMBER_PATTERN = re.compile(r"\b\d{2,3}-[A-Z0-9]+(?:-[A-Z0-9]+){2,}\b")
+PID_KEYWORD_PATTERN = re.compile(
+    r"\b(?:P&ID|PIPING|INSTRUMENTATION|PROCESS|DRAIN|VENT|TANK|PUMP|VALVE|STEAM|CONDENSATE|SETPOINT|NOZZLE|FLG|OCR|HOTSPOT)\b"
+)
+PROSE_WORD_PATTERN = re.compile(r"\b[A-Z]{5,}\b")
 
 
 def _normalize_text(raw_text: str) -> str:
@@ -54,18 +70,24 @@ def _normalize_text(raw_text: str) -> str:
     return compact
 
 
+def _canonicalize_label(raw_text: str) -> str:
+    compact = raw_text.strip().upper()
+    compact = re.sub(r"\s+", " ", compact)
+    return compact.replace(" - ", "-")
+
+
 def _infer_kind_and_subtype(raw_text: str) -> tuple[str, str | None]:
     normalized = _normalize_text(raw_text)
 
-    if re.fullmatch(r"\d{2,3}-[A-Z0-9]+(?:-[A-Z0-9]+){2,}", normalized):
+    if PID_LINE_NUMBER_PATTERN.fullmatch(normalized):
         return "line_number", None
 
-    equipment_prefixes = ("T-", "P-", "HX-", "TK-", "V-", "E-")
+    equipment_prefixes = ("T-", "P-", "HX-", "TK-", "V-", "E-", "C-", "FL-")
     if normalized.startswith(equipment_prefixes):
         subtype = normalized.split("-", 1)[0]
         return "equipment", subtype
 
-    match = re.match(r"([A-Z]{1,4})-\d{2,4}$", normalized)
+    match = re.match(r"([A-Z]{1,4})-\d{2,4}[A-Z]?$", normalized)
     if match:
         return "instrument_tag", match.group(1)
 
@@ -81,14 +103,189 @@ def _rect_to_polygon(x: float, y: float, width: float, height: float) -> list[di
     ]
 
 
-def _simulate_analysis(message: DocumentUploadedMessage) -> dict[str, Any]:
+def _is_pdf(message: DocumentUploadedMessage) -> bool:
+    return (
+        message.content_type.lower() == "application/pdf"
+        or Path(message.original_file_name).suffix.lower() == ".pdf"
+        or Path(message.blob_path).suffix.lower() == ".pdf"
+    )
+
+
+def _load_document_preview(message: DocumentUploadedMessage) -> tuple[Image.Image, str]:
+    if _is_pdf(message):
+        with fitz.open(message.blob_path) as document:
+            if document.page_count == 0:
+                raise ValueError("The uploaded PDF does not contain any pages.")
+
+            page = document.load_page(0)
+            embedded_text = page.get_text("text")
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            preview = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
+            return preview, embedded_text
+
+    with Image.open(message.blob_path) as source_image:
+        preview = ImageOps.exif_transpose(source_image).convert("RGB")
+        return preview, ""
+
+
+def _extract_sparse_text(image: Image.Image) -> str:
+    grayscale = ImageOps.autocontrast(ImageOps.grayscale(image))
+    width, height = grayscale.size
+    longest_edge = max(width, height)
+
+    if longest_edge < 1800:
+        scale = 1800 / longest_edge
+        resized = grayscale.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    else:
+        resized = grayscale
+
+    return pytesseract.image_to_string(resized, config="--oem 3 --psm 11")
+
+
+def _extract_pid_labels(text: str) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    for pattern in (PID_LINE_NUMBER_PATTERN, PID_EQUIPMENT_TAG_PATTERN, PID_INSTRUMENT_TAG_PATTERN):
+        for match in pattern.finditer(text):
+            label = _canonicalize_label(match.group(0))
+            if label in seen:
+                continue
+
+            seen.add(label)
+            labels.append(label)
+
+    return labels
+
+
+def _count_projection_peaks(values: list[int], threshold: int) -> int:
+    peaks = 0
+    run_length = 0
+
+    for value in values:
+        if value >= threshold:
+            run_length += 1
+            continue
+
+        if run_length >= 2:
+            peaks += 1
+        run_length = 0
+
+    if run_length >= 2:
+        peaks += 1
+
+    return peaks
+
+
+def _measure_line_structure(image: Image.Image) -> tuple[float, int, int]:
+    preview = ImageOps.autocontrast(ImageOps.grayscale(image))
+    preview.thumbnail((512, 512))
+
+    width, height = preview.size
+    pixels = preview.load()
+    row_dark_counts = [0 for _ in range(height)]
+    column_dark_counts = [0 for _ in range(width)]
+    dark_pixel_total = 0
+
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] < 176:
+                dark_pixel_total += 1
+                row_dark_counts[y] += 1
+                column_dark_counts[x] += 1
+
+    total_pixels = max(1, width * height)
+    dark_pixel_ratio = dark_pixel_total / total_pixels
+    horizontal_peaks = _count_projection_peaks(row_dark_counts, max(18, int(width * 0.38)))
+    vertical_peaks = _count_projection_peaks(column_dark_counts, max(18, int(height * 0.2)))
+
+    return dark_pixel_ratio, horizontal_peaks, vertical_peaks
+
+
+def _classify_pid_document(message: DocumentUploadedMessage) -> PidClassificationResult:
+    preview, embedded_text = _load_document_preview(message)
+    ocr_text = _extract_sparse_text(preview)
+
+    combined_text = "\n".join(
+        part for part in (embedded_text, ocr_text, message.original_file_name, message.project_name) if part
+    ).upper()
+    combined_text = re.sub(r"[_|]+", " ", combined_text)
+    labels = _extract_pid_labels(combined_text)
+    dark_pixel_ratio, horizontal_line_peaks, vertical_line_peaks = _measure_line_structure(preview)
+
+    instrument_count = sum(1 for label in labels if PID_INSTRUMENT_TAG_PATTERN.fullmatch(label))
+    equipment_count = sum(1 for label in labels if PID_EQUIPMENT_TAG_PATTERN.fullmatch(label))
+    line_number_count = sum(1 for label in labels if PID_LINE_NUMBER_PATTERN.fullmatch(label))
+    keyword_hits = len(set(PID_KEYWORD_PATTERN.findall(combined_text)))
+    prose_word_count = len(PROSE_WORD_PATTERN.findall(combined_text))
+    structural_label_count = instrument_count + equipment_count + line_number_count
+
+    line_structure_score = 0.0
+    if 0.01 <= dark_pixel_ratio <= 0.35:
+        line_structure_score = min(horizontal_line_peaks + vertical_line_peaks, 8) * 0.7
+
+    score = (
+        (instrument_count * 2.0)
+        + (equipment_count * 2.6)
+        + (line_number_count * 4.0)
+        + (keyword_hits * 0.75)
+        + line_structure_score
+    )
+
+    if prose_word_count > 18 and structural_label_count <= 1:
+        score -= 3.5
+    elif prose_word_count > 12 and line_number_count == 0 and equipment_count == 0:
+        score -= 2.0
+
+    threshold = float(os.getenv("PID_CLASSIFICATION_THRESHOLD", "8.5"))
+    is_pid = (
+        score >= threshold
+        and structural_label_count >= 3
+        and (instrument_count >= 2 or equipment_count >= 1 or line_number_count >= 1)
+    )
+
+    reason = (
+        f"P&ID score {score:.1f}/{threshold:.1f}; "
+        f"instrument tags={instrument_count}, equipment tags={equipment_count}, "
+        f"line numbers={line_number_count}, keywords={keyword_hits}, "
+        f"line peaks={horizontal_line_peaks + vertical_line_peaks}"
+    )
+
+    if not is_pid:
+        reason = (
+            "Uploaded document does not look like a P&ID drawing. "
+            f"{reason}. The processor refused to persist extracted analysis."
+        )
+
+    return PidClassificationResult(
+        is_pid=is_pid,
+        score=round(score, 2),
+        threshold=threshold,
+        labels=labels[:16],
+        instrument_count=instrument_count,
+        equipment_count=equipment_count,
+        line_number_count=line_number_count,
+        keyword_hits=keyword_hits,
+        horizontal_line_peaks=horizontal_line_peaks,
+        vertical_line_peaks=vertical_line_peaks,
+        dark_pixel_ratio=round(dark_pixel_ratio, 4),
+        embedded_text_length=len(embedded_text.strip()),
+        ocr_text_length=len(ocr_text.strip()),
+        reason=reason,
+    )
+
+
+def _build_analysis(message: DocumentUploadedMessage, labels: list[str], classification: PidClassificationResult) -> dict[str, Any]:
     seed = int(hashlib.sha256(message.document_id.encode("utf-8")).hexdigest()[:8], 16)
     rng = random.Random(seed)
     page_width = 1600
     page_height = 1200
     elements: list[dict[str, Any]] = []
 
-    for index, raw_text in enumerate(_infer_labels(message.original_file_name, message.project_name), start=1):
+    for index, raw_text in enumerate(labels, start=1):
         x = round(rng.uniform(40, page_width - 240), 2)
         y = round(rng.uniform(40, page_height - 120), 2)
         width = round(rng.uniform(90, 220), 2)
@@ -117,12 +314,13 @@ def _simulate_analysis(message: DocumentUploadedMessage) -> dict[str, Any]:
                 },
                 "polygon": _rect_to_polygon(x, y, width, height),
                 "confidence": {
-                    "ocr": round(rng.uniform(0.86, 0.99), 2),
-                    "detection": round(rng.uniform(0.82, 0.98), 2),
-                    "overall": round(rng.uniform(0.84, 0.99), 2),
+                    "ocr": round(rng.uniform(0.84, 0.99), 2),
+                    "detection": round(rng.uniform(0.8, 0.98), 2),
+                    "overall": round(rng.uniform(0.83, 0.99), 2),
                 },
                 "attributes": [
-                    {"name": "source", "value": "simulated"},
+                    {"name": "source", "value": "ocr-seeded-simulation"},
+                    {"name": "classifierScore", "value": str(classification.score)},
                     {"name": "pageNumber", "value": "1"},
                 ],
                 "relations": [],
@@ -135,7 +333,7 @@ def _simulate_analysis(message: DocumentUploadedMessage) -> dict[str, Any]:
 
     return {
         "schemaVersion": 2,
-        "processorVersion": "pid-worker-0.3.0",
+        "processorVersion": "pid-worker-0.4.0",
         "source": {
             "blobPath": message.blob_path,
             "contentType": message.content_type,
@@ -193,7 +391,30 @@ def process_document(message: DocumentUploadedMessage) -> dict[str, Any]:
         )
         raise HTTPException(status_code=404, detail="Uploaded blob was not found.")
 
-    analysis = _simulate_analysis(message)
+    try:
+        classification = _classify_pid_document(message)
+    except Exception as exc:  # pragma: no cover - defensive failure callback path
+        reason = f"Document inspection failed before OCR classification: {exc}"
+        _post_json(
+            f"{callback_base_url}/api/processing/failed",
+            {
+                "documentId": message.document_id,
+                "reason": reason,
+            },
+        )
+        raise HTTPException(status_code=422, detail=reason) from exc
+
+    if not classification.is_pid:
+        _post_json(
+            f"{callback_base_url}/api/processing/failed",
+            {
+                "documentId": message.document_id,
+                "reason": classification.reason,
+            },
+        )
+        raise HTTPException(status_code=422, detail=classification.reason)
+
+    analysis = _build_analysis(message, classification.labels, classification)
     element_count = sum(len(page["elements"]) for page in analysis["pages"])
     _post_json(
         f"{callback_base_url}/api/processing/completed",
@@ -207,5 +428,6 @@ def process_document(message: DocumentUploadedMessage) -> dict[str, Any]:
         "documentId": message.document_id,
         "processedAtUtc": datetime.now(timezone.utc).isoformat(),
         "hotspotCount": element_count,
+        "classificationScore": classification.score,
         "status": "completed",
     }
