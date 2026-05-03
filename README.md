@@ -1,4 +1,4 @@
-# Aize Document Organizer
+# P&ID Document Organizer
 
 An Aize-inspired P&ID document pipeline built around clean architecture and DDD in .NET, with a Python processing microservice for OCR/CV-style extraction.
 
