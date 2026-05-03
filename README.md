@@ -31,7 +31,7 @@ Architecture:
 Responsibilities:
 
 - receives upload events from the .NET queue dispatcher
-- simulates OCR/CV extraction for hotspots and tag numbers
+- simulates OCR/CV extraction for structured P&ID elements, tags, and overlay geometry
 - calls the .NET API back with completion or failure payloads
 
 ### 3. React portal
@@ -43,9 +43,26 @@ Responsibilities:
 - bulk upload multiple drawings
 - show accepted `202` uploads immediately
 - subscribe to realtime status updates through SignalR
-- show completed hotspot counts per drawing
+- show completed overlay counts per drawing
 
 ## Local development
+
+### Build everything with one Dockerfile
+
+From the repository root:
+
+```bash
+docker build -t aize-document-organizer .
+docker run --rm -p 5050:8080 -p 8001:8001 aize-document-organizer
+```
+
+This single image:
+
+- serves the React frontend from the .NET app at `http://localhost:5050`
+- serves Swagger at `http://localhost:5050/swagger`
+- runs the Python processor inside the same container on `http://localhost:8001`
+
+This is the simplest local/dev packaging path. It intentionally collapses the microservices into one container for convenience.
 
 ### Start the .NET service
 
@@ -59,6 +76,17 @@ Swagger UI is available at:
 
 - `http://localhost:5000/swagger`
 - `https://localhost:7000/swagger`
+
+Authentication:
+
+- `POST /api/auth/login` issues a local bearer token for development
+- `GET /api/auth/me` returns the authenticated user profile
+- protected endpoints require `Authorization: Bearer <token>`
+
+Demo users:
+
+- `demo.operator / Pass123!`
+- `demo.admin / Admin123!`
 
 ### Start the Python processor
 
@@ -90,23 +118,26 @@ VITE_DOCUMENT_API_BASE_URL=http://localhost:5000 npm run dev
 docker compose -f deploy/docker/docker-compose.yml up --build
 ```
 
-Docker now uses safer host ports by default to avoid common macOS conflicts:
+Docker now starts the full stack with safer host ports by default:
 
 - .NET API: `http://localhost:5050`
 - Python processor: `http://localhost:8002`
 - Swagger UI: `http://localhost:5050/swagger`
+- React portal: `http://localhost:5173`
 
-If you run the React app against the Dockerized backend:
+Use this when you want the services split across separate containers instead of the single-image local build above.
 
-```bash
-cd src/web/pid-portal
-VITE_DOCUMENT_API_BASE_URL=http://localhost:5050 npm run dev
-```
+When using Swagger:
+
+1. Call `POST /api/auth/login`
+2. Copy the `accessToken`
+3. Click `Authorize`
+4. Paste the raw `accessToken`
 
 You can still override the Docker host ports if you want:
 
 ```bash
-DOCUMENT_API_PORT=5051 PYTHON_PROCESSOR_PORT=8003 docker compose -f deploy/docker/docker-compose.yml up --build
+DOCUMENT_API_PORT=5051 PYTHON_PROCESSOR_PORT=8003 FRONTEND_PORT=5174 docker compose -f deploy/docker/docker-compose.yml up --build
 ```
 
 ## HTTP endpoints
@@ -118,7 +149,6 @@ DOCUMENT_API_PORT=5051 PYTHON_PROCESSOR_PORT=8003 docker compose -f deploy/docke
 Multipart form fields:
 
 - `projectName`
-- `uploadedByUserId`
 - one or more `files`
 
 The response is `202 Accepted` with accepted document IDs.
@@ -135,7 +165,7 @@ The response is `202 Accepted` with accepted document IDs.
 
 ### SignalR hub
 
-`/hubs/documents?userId=demo.user`
+`/hubs/documents`
 
 ## Deployment assets
 

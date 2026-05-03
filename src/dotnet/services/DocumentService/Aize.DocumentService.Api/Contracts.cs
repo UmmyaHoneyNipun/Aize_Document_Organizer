@@ -8,9 +8,6 @@ public sealed class UploadDocumentsApiRequest
     [FromForm(Name = "projectName")]
     public string ProjectName { get; init; } = string.Empty;
 
-    [FromForm(Name = "uploadedByUserId")]
-    public string UploadedByUserId { get; init; } = string.Empty;
-
     [FromForm(Name = "files")]
     public List<IFormFile> Files { get; init; } = [];
 }
@@ -19,7 +16,7 @@ public sealed record UploadDocumentsResponse(IReadOnlyCollection<AcceptedDocumen
 
 public sealed record CompleteDocumentProcessingApiRequest(
     Guid DocumentId,
-    IReadOnlyCollection<HotspotDto> Hotspots);
+    PidAnalysisDto Analysis);
 
 public sealed record FailDocumentProcessingApiRequest(
     Guid DocumentId,

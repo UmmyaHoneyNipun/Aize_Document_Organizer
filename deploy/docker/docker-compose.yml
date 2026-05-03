@@ -24,5 +24,16 @@ services:
     volumes:
       - shared-blob-storage:/shared/blob-storage
 
+  pid-portal:
+    build:
+      context: ../../src/web/pid-portal
+      dockerfile: Dockerfile
+    environment:
+      VITE_DOCUMENT_API_BASE_URL: "http://localhost:${DOCUMENT_API_PORT:-5050}"
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - document-api
+
 volumes:
   shared-blob-storage:

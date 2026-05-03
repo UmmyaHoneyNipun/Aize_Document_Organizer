@@ -114,6 +114,21 @@ body::before {
   padding: 1.25rem;
 }
 
+.auth-panel {
+  margin-bottom: 1rem;
+}
+
+.auth-form,
+.auth-summary {
+  display: grid;
+  gap: 1rem;
+}
+
+.auth-summary {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
 .panel-heading {
   display: flex;
   justify-content: space-between;

@@ -54,7 +54,7 @@ public sealed class DocumentApplicationService
 
             await _documentRepository.AddAsync(document, cancellationToken);
 
-            var readModel = ToReadModel(document);
+            var readModel = ToReadModel(document, analysis: null);
             await _readModelRepository.UpsertAsync(readModel, cancellationToken);
 
             var message = new DocumentUploadedMessage(
@@ -93,7 +93,8 @@ public sealed class DocumentApplicationService
         document.MarkProcessing(_timeProvider.GetUtcNow());
         await _documentRepository.UpdateAsync(document, cancellationToken);
 
-        var readModel = ToReadModel(document);
+        var existingReadModel = await _readModelRepository.GetAsync(documentId, cancellationToken);
+        var readModel = ToReadModel(document, existingReadModel?.Analysis);
         await _readModelRepository.UpsertAsync(readModel, cancellationToken);
         await _notificationPublisher.PublishStatusChangedAsync(readModel, cancellationToken);
 
@@ -110,7 +111,7 @@ public sealed class DocumentApplicationService
             return Result.Failure($"Document '{request.DocumentId}' was not found.");
         }
 
-        var hotspots = request.Hotspots
+        var hotspots = ExtractHotspots(request.Analysis)
             .Select(hotspot => new Hotspot(
                 hotspot.TagNumber,
                 hotspot.X,
@@ -123,7 +124,7 @@ public sealed class DocumentApplicationService
         document.Complete(hotspots, _timeProvider.GetUtcNow());
         await _documentRepository.UpdateAsync(document, cancellationToken);
 
-        var readModel = ToReadModel(document);
+        var readModel = ToReadModel(document, request.Analysis);
         await _readModelRepository.UpsertAsync(readModel, cancellationToken);
         await _notificationPublisher.PublishStatusChangedAsync(readModel, cancellationToken);
 
@@ -143,7 +144,8 @@ public sealed class DocumentApplicationService
         document.Fail(request.Reason, _timeProvider.GetUtcNow());
         await _documentRepository.UpdateAsync(document, cancellationToken);
 
-        var readModel = ToReadModel(document);
+        var existingReadModel = await _readModelRepository.GetAsync(request.DocumentId, cancellationToken);
+        var readModel = ToReadModel(document, existingReadModel?.Analysis);
         await _readModelRepository.UpsertAsync(readModel, cancellationToken);
         await _notificationPublisher.PublishStatusChangedAsync(readModel, cancellationToken);
 
@@ -180,9 +182,10 @@ public sealed class DocumentApplicationService
             readModel.FailureReason,
             readModel.UploadedAtUtc,
             readModel.LastUpdatedAtUtc,
-            readModel.Hotspots);
+            readModel.Hotspots,
+            readModel.Analysis);
 
-    private static DocumentReadModel ToReadModel(Document document) =>
+    private static DocumentReadModel ToReadModel(Document document, PidAnalysisDto? analysis) =>
         new(
             document.Id,
             document.ProjectName,
@@ -203,6 +206,19 @@ public sealed class DocumentApplicationService
                     hotspot.Width,
                     hotspot.Height,
                     hotspot.Confidence))
-                .ToArray());
+                .ToArray(),
+            analysis);
+
+    private static IReadOnlyCollection<HotspotDto> ExtractHotspots(PidAnalysisDto analysis) =>
+        analysis.Pages
+            .SelectMany(page => page.Elements)
+            .Select(element => new HotspotDto(
+                string.IsNullOrWhiteSpace(element.NormalizedText) ? element.RawText : element.NormalizedText,
+                element.BboxPx.X,
+                element.BboxPx.Y,
+                element.BboxPx.Width,
+                element.BboxPx.Height,
+                element.Confidence.Overall))
+            .ToArray();
 
 }

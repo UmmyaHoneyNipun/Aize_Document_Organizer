@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Threading.Channels;
 using Aize.DocumentService.Application;
 using Aize.DocumentService.Domain;
@@ -60,7 +61,7 @@ public sealed class DocumentStatusHub : Hub<IDocumentStatusClient>
 
     public override async Task OnConnectedAsync()
     {
-        var userId = Context.GetHttpContext()?.Request.Query["userId"].ToString();
+        var userId = Context.User?.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!string.IsNullOrWhiteSpace(userId))
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, GroupForUser(userId));

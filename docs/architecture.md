@@ -36,5 +36,5 @@ Replace these adapters for production:
 2. The .NET API streams each file into local blob storage and stores the document state as `Pending`.
 3. The API publishes a `DocumentUploadedMessage` and returns `202 Accepted`.
 4. A background dispatcher marks the document as `Processing` and calls the Python processor.
-5. The Python processor returns extracted hotspots through `/api/processing/completed`.
+5. The Python processor returns extracted P&ID analysis through `/api/processing/completed`.
 6. The .NET service marks the document `Completed` and pushes a SignalR update to the owning user.
