@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import * as signalR from "@microsoft/signalr";
 
 type DocumentStatus = "Pending" | "Processing" | "Completed" | "Failed";
@@ -68,6 +68,13 @@ const statusMap: Record<number, DocumentStatus> = {
   1: "Processing",
   2: "Completed",
   3: "Failed"
+};
+const statusOrder: DocumentStatus[] = ["Completed", "Processing", "Pending", "Failed"];
+const statusColorMap: Record<DocumentStatus, string> = {
+  Pending: "var(--pending)",
+  Processing: "var(--processing)",
+  Completed: "var(--success)",
+  Failed: "var(--failed)"
 };
 
 function readStoredSession(): AuthSession | null {
@@ -262,86 +269,101 @@ function App() {
     },
     { ...connectedStatuses }
   );
+  const totalDocumentCount = documents.length;
+  const statusBreakdown = statusOrder.map((status) => ({
+    status,
+    count: totals[status],
+    share: totalDocumentCount ? Math.round((totals[status] / totalDocumentCount) * 100) : 0
+  }));
+  const statusChart = useMemo(() => {
+    if (!totalDocumentCount) {
+      return "conic-gradient(rgba(141, 182, 200, 0.18) 0deg 360deg)";
+    }
+
+    let angle = 0;
+    const segments = statusOrder.flatMap((status) => {
+      const count = totals[status];
+      if (!count) {
+        return [];
+      }
+
+      const nextAngle = angle + (count / totalDocumentCount) * 360;
+      const segment = `${statusColorMap[status]} ${angle.toFixed(2)}deg ${nextAngle.toFixed(2)}deg`;
+      angle = nextAngle;
+      return [segment];
+    });
+
+    return `conic-gradient(${segments.join(", ")})`;
+  }, [totalDocumentCount, totals]);
+  const statusChartStyle = { "--status-chart": statusChart } as CSSProperties;
 
   return (
     <main className="shell">
-      <section className="hero">
-        <p className="eyebrow"> Organize messy documents</p>
-        <h1>Upload hundreds of P&amp;ID drawings without pinning the UI.</h1>
-        <p className="lede">
-          The .NET ingestion service accepts the files, returns 202 immediately, and the Python processor
-          resolves hotspots asynchronously through the realtime status stream.
-        </p>
-      </section>
+      <section className="hero-row">
+        <section className="hero">
+          <h1>Organize messy documents of P&amp;ID drawings</h1>
+          <p className="lede">
+            Login and Upload the bulk documents then process the document by OCR technology
+          </p>
+        </section>
 
-      <section className="panel auth-panel">
-        {!authSession ? (
-          <form className="auth-form" onSubmit={handleLogin}>
-            <div className="panel-heading">
-              <h2>Authentication</h2>
-              <p>Use a local bearer token issued by the .NET API.</p>
+        <section className="panel auth-panel">
+          {!authSession ? (
+            <form className="auth-form" onSubmit={handleLogin}>
+              <div className="panel-heading">
+                <h2>Authentication</h2>
+              </div>
+
+              <label>
+                Username
+                <input value={username} onChange={(event) => setUsername(event.target.value)} />
+              </label>
+
+              <label>
+                Password
+                <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              </label>
+
+              <button disabled={isAuthenticating} type="submit">
+                {isAuthenticating ? "Signing in..." : "Sign in"}
+              </button>
+
+            </form>
+          ) : (
+            <div className="auth-summary">
+              <div>
+                <h2>{authSession.displayName}</h2>
+                <p className="meta-line">{authSession.username}</p>
+                <p className="meta-line">Roles: {authSession.roles.join(", ")}</p>
+              </div>
+              <button type="button" onClick={handleLogout}>
+                Sign out
+              </button>
             </div>
-
-            <label>
-              Username
-              <input value={username} onChange={(event) => setUsername(event.target.value)} />
-            </label>
-
-            <label>
-              Password
-              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-            </label>
-
-            <button disabled={isAuthenticating} type="submit">
-              {isAuthenticating ? "Signing in..." : "Sign in"}
-            </button>
-
-            <p className="meta-line">Demo accounts: demo.operator / Pass123! and demo.admin / Admin123!</p>
-          </form>
-        ) : (
-          <div className="auth-summary">
-            <div>
-              <h2>{authSession.displayName}</h2>
-              <p className="meta-line">{authSession.username}</p>
-              <p className="meta-line">Roles: {authSession.roles.join(", ")}</p>
-            </div>
-            <button type="button" onClick={handleLogout}>
-              Sign out
-            </button>
-          </div>
-        )}
+          )}
+        </section>
       </section>
 
-      <section className="metrics">
-        <article>
-          <span>Pending</span>
-          <strong>{totals.Pending}</strong>
-        </article>
-        <article>
-          <span>Processing</span>
-          <strong>{totals.Processing}</strong>
-        </article>
-        <article>
-          <span>Completed</span>
-          <strong>{totals.Completed}</strong>
-        </article>
-        <article>
-          <span>Failed</span>
-          <strong>{totals.Failed}</strong>
-        </article>
-      </section>
-
-      <section className="grid">
-        <form className="panel upload-panel" onSubmit={handleUpload}>
+      <section className="ingress-status-row">
+        <form className="panel upload-panel upload-panel-hero" onSubmit={handleUpload}>
           <div className="panel-heading">
             <h2>Ingress</h2>
             <p>{feedMessage}</p>
           </div>
 
-          <label>
-            Project
-            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-          </label>
+          <div className="upload-controls">
+            <label className="project-field">
+              Project
+              <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+            </label>
+
+            <div className="upload-submit">
+              <p className="meta-line">PDF, PNG, JPG</p>
+              <button disabled={isUploading || !authSession} type="submit">
+                {isUploading ? "Streaming to blob storage..." : "Upload drawings"}
+              </button>
+            </div>
+          </div>
 
           <label className="drop-zone">
             <input
@@ -352,41 +374,72 @@ function App() {
             />
             <span>{selectedFiles?.length ? `${selectedFiles.length} files selected` : "Drop drawings or browse files"}</span>
           </label>
-
-          <button disabled={isUploading || !authSession} type="submit">
-            {isUploading ? "Streaming to blob storage..." : "Upload drawings"}
-          </button>
         </form>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>Realtime documents</h2>
-            <p>{documents.length} tracked item(s)</p>
+        <section className="metrics metrics-compact">
+          <article>
+            <span>Pending</span>
+            <strong>{totals.Pending}</strong>
+          </article>
+          <article>
+            <span>Processing</span>
+            <strong>{totals.Processing}</strong>
+          </article>
+          <article>
+            <span>Completed</span>
+            <strong>{totals.Completed}</strong>
+          </article>
+          <article>
+            <span>Failed</span>
+            <strong>{totals.Failed}</strong>
+          </article>
+        </section>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Realtime documents</h2>
+          <p>{documents.length} tracked item(s)</p>
+        </div>
+
+        <div className="documents-overview">
+          <div className="status-pie-card">
+            <div className="status-pie" style={statusChartStyle}>
+              <div className="status-pie-center">
+                <strong>{totalDocumentCount}</strong>
+                <span>{totalDocumentCount === 1 ? "drawing" : "drawings"}</span>
+              </div>
+            </div>
           </div>
 
-          <div className="document-list">
-            {documents.map((document) => (
-              <article
-                className={`document-card status-${normalizeStatus(document.status).toLowerCase()}`}
-                key={document.documentId}
-              >
-                <div>
-                  <p className="file-name">{document.originalFileName}</p>
-                  <p className="meta-line">{document.projectName}</p>
-                </div>
-                <div className="status-badge">{normalizeStatus(document.status)}</div>
-                <p className="meta-line">{new Date(document.lastUpdatedAtUtc).toLocaleString()}</p>
-                <p className="meta-line">Overlays: {document.hotspotCount}</p>
-                {document.analysis ? (
-                  <p className="meta-line">
-                    Tags: {document.analysis.summary.tagCount} · Equipment: {document.analysis.summary.equipmentCount}
-                  </p>
-                ) : null}
-                {document.failureReason ? <p className="error-copy">{document.failureReason}</p> : null}
+          <div className="status-legend">
+            {statusBreakdown.map((item) => (
+              <article className="status-legend-item" key={item.status}>
+                <span className={`status-dot status-dot-${item.status.toLowerCase()}`} />
+                <span className="status-legend-label">{item.status}</span>
+                <strong>{item.count}</strong>
+                <span className="status-legend-share">{item.share}%</span>
               </article>
             ))}
           </div>
-        </section>
+        </div>
+
+        <div className="document-list">
+          {documents.map((document) => (
+            <article
+              className={`document-card status-${normalizeStatus(document.status).toLowerCase()}`}
+              key={document.documentId}
+            >
+              <div>
+                <p className="file-name">{document.originalFileName}</p>
+                <p className="meta-line">{document.projectName}</p>
+              </div>
+              <div className="status-badge">{normalizeStatus(document.status)}</div>
+              <p className="meta-line">{new Date(document.lastUpdatedAtUtc).toLocaleString()}</p>
+              {document.failureReason ? <p className="error-copy">{document.failureReason}</p> : null}
+            </article>
+          ))}
+        </div>
       </section>
     </main>
   );
